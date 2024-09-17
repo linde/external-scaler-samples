@@ -2,134 +2,86 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	pb "externalscaler-sample/externalscaler"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
+	"strconv"
 
 	// "log"
 	// "net"
-	"net/http"
+
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type ExternalScaler struct{}
 
-type USGSResponse struct {
-	Features []USGSFeature `json:"features"`
-}
+const METRIC_NAME = "QUEUE"
+const METRIC_TARGETSIZE = 2 // TODO change to DEFAULT
 
-type USGSFeature struct {
-	Properties USGSProperties `json:"properties"`
-}
+const SCALEDOBJECT_KEY_METRIC_TARGETSIZE = "metricTargetSize"
 
-type USGSProperties struct {
-	Mag float64 `json:"mag"`
+func getCurrentMetric() (metric int) {
+	_, minutes, _ := time.Now().Clock()
+	metric = minutes % 5
+	return metric
 }
 
 func (e *ExternalScaler) IsActive(ctx context.Context, scaledObject *pb.ScaledObjectRef) (*pb.IsActiveResponse, error) {
-	longitude := scaledObject.ScalerMetadata["longitude"]
-	latitude := scaledObject.ScalerMetadata["latitude"]
 
-	if len(longitude) == 0 || len(latitude) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "longitude and latitude must be specified")
-	}
+	scaledObjectMetricTargetSizeStr := scaledObject.ScalerMetadata[SCALEDOBJECT_KEY_METRIC_TARGETSIZE]
 
-	startTime := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
-	endTime := time.Now().Format("2006-01-02")
-	radiusKM := 500
-	query := fmt.Sprintf("format=geojson&starttime=%s&endtime=%s&longitude=%s&latitude=%s&maxradiuskm=%d", startTime, endTime, longitude, latitude, radiusKM)
+	targetMetric, err := strconv.Atoi(scaledObjectMetricTargetSizeStr)
 
-	resp, err := http.Get(fmt.Sprintf("https://earthquake.usgs.gov/fdsnws/event/1/query?%s", query))
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		targetMetric = METRIC_TARGETSIZE
 	}
 
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-
-	payload := USGSResponse{}
-	err = json.Unmarshal(body, &payload)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-
-	count := 0
-	for _, f := range payload.Features {
-		if f.Properties.Mag > 1.0 {
-			count++
-		}
-	}
-
+	metric := getCurrentMetric()
 	return &pb.IsActiveResponse{
-		Result: count > 2,
+		Result: metric > targetMetric,
 	}, nil
 }
 
 func (e *ExternalScaler) GetMetricSpec(context.Context, *pb.ScaledObjectRef) (*pb.GetMetricSpecResponse, error) {
 	return &pb.GetMetricSpecResponse{
 		MetricSpecs: []*pb.MetricSpec{{
-			MetricName: "eqThreshold",
-			TargetSize: 10,
+			MetricName: METRIC_NAME,
+			TargetSize: METRIC_TARGETSIZE,
 		}},
 	}, nil
 }
 
 func (e *ExternalScaler) GetMetrics(_ context.Context, metricRequest *pb.GetMetricsRequest) (*pb.GetMetricsResponse, error) {
-	longitude := metricRequest.ScaledObjectRef.ScalerMetadata["longitude"]
-	latitude := metricRequest.ScaledObjectRef.ScalerMetadata["latitude"]
 
-	if len(longitude) == 0 || len(latitude) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "longitude and latitude must be specified")
-	}
-
-	earthquakeCount, err := getEarthQuakeCount(longitude, latitude, 1.0)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-
+	metric := getCurrentMetric()
 	return &pb.GetMetricsResponse{
 		MetricValues: []*pb.MetricValue{{
-			MetricName:  "earthquakeThreshold",
-			MetricValue: int64(earthquakeCount),
+			MetricName:  METRIC_NAME,
+			MetricValue: int64(metric),
 		}},
 	}, nil
 }
 
-func getEarthQuakeCount(longitude, latitude string, magThreshold float64) (int, error) {
-	return 0, nil
-}
-
 func (e *ExternalScaler) StreamIsActive(scaledObject *pb.ScaledObjectRef, epsServer pb.ExternalScaler_StreamIsActiveServer) error {
-	longitude := scaledObject.ScalerMetadata["longitude"]
-	latitude := scaledObject.ScalerMetadata["latitude"]
-
-	if len(longitude) == 0 || len(latitude) == 0 {
-		return status.Error(codes.InvalidArgument, "longitude and latitude must be specified")
-	}
 
 	for {
 		select {
 		case <-epsServer.Context().Done():
 			// call cancelled
 			return nil
-		case <-time.Tick(time.Hour * 1):
-			earthquakeCount, err := getEarthQuakeCount(longitude, latitude, 1.0)
-			if err != nil {
-				// log error
-			} else if earthquakeCount > 2 {
-				err = epsServer.Send(&pb.IsActiveResponse{
+		case <-time.Tick(time.Minute * 1):
+			metric := getCurrentMetric()
+
+			if metric > METRIC_TARGETSIZE {
+				err := epsServer.Send(&pb.IsActiveResponse{
 					Result: true,
 				})
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}

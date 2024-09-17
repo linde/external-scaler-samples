@@ -1,3 +1,9 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: golang-external-scaler-ns
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,8 +21,8 @@ spec:
     spec:
       containers:
       - name: scaler
-        image: golang-external-scaler:latest
-        imagePullPolicy: Always
+        image: kind.local/externalscaler-sample:latest
+        imagePullPolicy: Never  # we load it into kind directly above
         ports:
         - containerPort: 6000
 ---
@@ -60,8 +66,10 @@ metadata:
 spec:
   scaleTargetRef:
     name: test-1
-  pollingInterval: 20
+  pollingInterval: 5
+  cooldownPeriod: 0
   triggers:
     - type: external
       metadata:
         scalerAddress: golang-external-scaler.golang-external-scaler-ns:6000
+        metricTargetSize: "1"
