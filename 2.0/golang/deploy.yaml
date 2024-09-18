@@ -72,4 +72,5 @@ spec:
     - type: external
       metadata:
         scalerAddress: golang-external-scaler.golang-external-scaler-ns:6000
-        metricTargetSize: "1"
+        metricTargetSize: "1"  # the threshold to trigger scalaing
+        metricModulus: "3"     # scales our metric to speed things up

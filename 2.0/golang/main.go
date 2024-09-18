@@ -8,9 +8,6 @@ import (
 	"net"
 	"strconv"
 
-	// "log"
-	// "net"
-
 	"time"
 
 	"google.golang.org/grpc"
@@ -19,44 +16,78 @@ import (
 type ExternalScaler struct{}
 
 const METRIC_NAME = "QUEUE"
-const METRIC_TARGETSIZE = 2 // TODO change to DEFAULT
 
-const SCALEDOBJECT_KEY_METRIC_TARGETSIZE = "metricTargetSize"
+const KEY_METRIC_TARGETSIZE = "metricTargetSize"
+const DEFAULT_METRIC_TARGETSIZE = 2
 
-func getCurrentMetric() (metric int) {
+const KEY_METRIC_MODULUS = "metricModulus"
+const DEFAULT_METRIC_MODULUS = 3
+
+func getCurrentMetric(metricModulus int) (metric int) {
 	_, minutes, _ := time.Now().Clock()
-	metric = minutes % 5
+	metric = minutes % metricModulus
+
+	log.Printf("getCurrentMetric: %d %% %d: %d", minutes, metricModulus, metric)
+
 	return metric
+}
+
+func getScaledObjectKey(scaledObject *pb.ScaledObjectRef, key string, defaultVal int) int {
+
+	if scaledObject == nil {
+		return defaultVal
+	}
+	scaledObjectValStr, ok := scaledObject.ScalerMetadata[key]
+	if !ok {
+		return defaultVal
+	}
+	val, err := strconv.Atoi(scaledObjectValStr)
+	if err != nil {
+		val = defaultVal
+	}
+	return val
+}
+
+func getTargetMetric(scaledObject *pb.ScaledObjectRef) int {
+	return getScaledObjectKey(scaledObject, KEY_METRIC_TARGETSIZE,
+		DEFAULT_METRIC_TARGETSIZE)
+}
+
+func getMetricModulus(scaledObject *pb.ScaledObjectRef) int {
+	return getScaledObjectKey(scaledObject,
+		KEY_METRIC_MODULUS, DEFAULT_METRIC_MODULUS)
 }
 
 func (e *ExternalScaler) IsActive(ctx context.Context, scaledObject *pb.ScaledObjectRef) (*pb.IsActiveResponse, error) {
 
-	scaledObjectMetricTargetSizeStr := scaledObject.ScalerMetadata[SCALEDOBJECT_KEY_METRIC_TARGETSIZE]
+	targetMetric := getTargetMetric(scaledObject)
+	metricModulus := getMetricModulus(scaledObject)
 
-	targetMetric, err := strconv.Atoi(scaledObjectMetricTargetSizeStr)
+	metric := getCurrentMetric(metricModulus)
+	log.Printf("IsActive: metric: %d, targetMetric: %d", metric, targetMetric)
 
-	if err != nil {
-		targetMetric = METRIC_TARGETSIZE
-	}
-
-	metric := getCurrentMetric()
 	return &pb.IsActiveResponse{
-		Result: metric > targetMetric,
+		Result: metric >= targetMetric,
 	}, nil
 }
 
-func (e *ExternalScaler) GetMetricSpec(context.Context, *pb.ScaledObjectRef) (*pb.GetMetricSpecResponse, error) {
+func (e *ExternalScaler) GetMetricSpec(_ context.Context, scaledObject *pb.ScaledObjectRef) (*pb.GetMetricSpecResponse, error) {
+
+	targetMetric := getTargetMetric(scaledObject)
+
 	return &pb.GetMetricSpecResponse{
 		MetricSpecs: []*pb.MetricSpec{{
 			MetricName: METRIC_NAME,
-			TargetSize: METRIC_TARGETSIZE,
+			TargetSize: int64(targetMetric),
 		}},
 	}, nil
 }
 
 func (e *ExternalScaler) GetMetrics(_ context.Context, metricRequest *pb.GetMetricsRequest) (*pb.GetMetricsResponse, error) {
 
-	metric := getCurrentMetric()
+	metricModulus := getMetricModulus(metricRequest.GetScaledObjectRef())
+	metric := getCurrentMetric(metricModulus)
+
 	return &pb.GetMetricsResponse{
 		MetricValues: []*pb.MetricValue{{
 			MetricName:  METRIC_NAME,
@@ -67,15 +98,19 @@ func (e *ExternalScaler) GetMetrics(_ context.Context, metricRequest *pb.GetMetr
 
 func (e *ExternalScaler) StreamIsActive(scaledObject *pb.ScaledObjectRef, epsServer pb.ExternalScaler_StreamIsActiveServer) error {
 
+	targetMetric := getTargetMetric(scaledObject)
+	metricModulus := getMetricModulus(scaledObject)
+
 	for {
 		select {
 		case <-epsServer.Context().Done():
 			// call cancelled
 			return nil
 		case <-time.Tick(time.Minute * 1):
-			metric := getCurrentMetric()
+			metric := getCurrentMetric(metricModulus)
+			log.Printf("StreamIsActive: metric: %d, targetMetric: %d", metric, targetMetric)
 
-			if metric > METRIC_TARGETSIZE {
+			if metric >= targetMetric {
 				err := epsServer.Send(&pb.IsActiveResponse{
 					Result: true,
 				})

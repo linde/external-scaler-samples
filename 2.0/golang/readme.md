@@ -34,7 +34,7 @@ watch -d kubectl get -n golang-external-scaler-ns  pod,deployment,scaledobject
 
 ## FYI: if running locally via `go run main.go`, you can pass it in explicitly.
 # the value for a cluster's ScaledObject will trump this if hitting the cluster service
-grpcurl  -d '{"scalerMetadata":{"metricTargetSize":"4"}}' \
+grpcurl  -d '{"scalerMetadata":{"metricTargetSize":"1", "metricModulus":"3"}}' \
     -plaintext -import-path .  -proto externalscaler.proto   \
     []:6000 externalscaler.ExternalScaler.IsActive
 
